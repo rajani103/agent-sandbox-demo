@@ -1,0 +1,34 @@
+# Blueprint for every sandbox. Every field below is required by GKE's
+# Agent Sandbox admission policy; removing one gets the pod rejected.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: python-runtime-template
+  namespace: agents
+spec:
+  podTemplate:
+    metadata:
+      labels:
+        app: agent-sandbox            # NetworkPolicy and kubectl filters use this
+    spec:
+      runtimeClassName: gvisor
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+      nodeSelector:
+        sandbox.gke.io/runtime: gvisor
+      tolerations:
+      - key: sandbox.gke.io/runtime
+        operator: Equal
+        value: gvisor
+        effect: NoSchedule
+      containers:
+      - name: runtime
+        image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.1.0
+        resources:
+          requests: {cpu: "250m", memory: 512Mi}
+          limits:   {cpu: "500m", memory: 1Gi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]

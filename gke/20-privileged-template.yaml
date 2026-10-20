@@ -1,0 +1,42 @@
+# Act 3: identical to 10-template.yaml except ONE line (privileged: true).
+# Expected: rejected by the Agent Sandbox admission policy. Paste the real error on slide 11.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: privileged-template
+  namespace: agents
+spec:
+  podTemplate:
+    spec:
+      runtimeClassName: gvisor
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+      nodeSelector:
+        sandbox.gke.io/runtime: gvisor
+      tolerations:
+      - key: sandbox.gke.io/runtime
+        operator: Equal
+        value: gvisor
+        effect: NoSchedule
+      containers:
+      - name: runtime
+        image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.1.0
+        resources:
+          limits: {cpu: "500m", memory: 1Gi}
+        securityContext:
+          privileged: true          # <-- the only change
+          capabilities:
+            drop: ["ALL"]
+---
+# The template object itself may be accepted; the policy acts on the POD.
+# A pool forces a pod to be created, so the rejection becomes visible.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: privileged-pool
+  namespace: agents
+spec:
+  replicas: 1
+  sandboxTemplateRef:
+    name: privileged-template

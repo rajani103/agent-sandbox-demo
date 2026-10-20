@@ -1,0 +1,3 @@
+google-adk>=1.19.0
+k8s-agent-sandbox
+matplotlib>=3.8

@@ -1,0 +1,9 @@
+# A manual claim, to show the object model with kubectl before the agent does it via the SDK.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxClaim
+metadata:
+  name: manual-claim
+  namespace: agents
+spec:
+  warmPoolRef:
+    name: python-sandbox-pool

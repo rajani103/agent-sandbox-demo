@@ -1,0 +1,17 @@
+# Act 3: default-deny egress for sandbox pods. Only DNS is allowed out.
+# Ingress is untouched, so the router can still reach the sandboxes.
+# Requires NetworkPolicy enforcement (Dataplane V2, on by default in Autopilot).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-egress-deny
+  namespace: agents
+spec:
+  podSelector:
+    matchLabels:
+      app: agent-sandbox
+  policyTypes: [Egress]
+  egress:
+  - ports:
+    - {protocol: UDP, port: 53}
+    - {protocol: TCP, port: 53}

@@ -1,0 +1,12 @@
+# Pods already running so agents never wait on a cold start.
+# For the load test, keep replicas BELOW the concurrency (5 vs 20) so the
+# audience sees warm claims first, then the pool running dry.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: python-sandbox-pool
+  namespace: agents
+spec:
+  replicas: 5
+  sandboxTemplateRef:
+    name: python-runtime-template
