@@ -1,119 +1,156 @@
-# Sandbox demo kit: "Your Agent Just Ran rm -rf"
+# Your Agent Just Ran `rm -rf`: Sandboxing AI Agents
 
+Demo kit for sandboxing AI agents, from **Docker Sandboxes** on the laptop to **GKE Agent Sandbox** on the cluster.
 By Rajani Ekunde and Rishi Mondal.
 
-One Gemini agent, one tool (`run_code`), two places to run that code:
-a Docker Sandbox (microVM) on the laptop, or GKE Agent Sandbox (gVisor) on the cluster.
-Switch with one setting: `SANDBOX_BACKEND=docker|gke`.
+The idea in one line: **the limits live outside the agent.** Every guardrail below is enforced by the platform,
+not by a prompt.
 
-> Not yet run end to end. Everything here is written from the Docker and GKE docs.
-> Do the "Verify in rehearsal" list below in your first dry run.
+## What's verified
 
-## What's in here
+Both demos were run end to end on:
+- Docker Sandboxes (`sbx` CLI) on macOS, Claude Code as the agent
+- GKE Autopilot **1.37.1-gke.1697000** (RAPID channel), `asia-south1`, `--enable-agent-sandbox`
+
+The ADK agent in `agent/` (one agent, two backends) and `loadtest.py` are included but were not part of the recorded demo.
+
+## Repo layout
 
 | Path | What it is |
 | --- | --- |
-| `todo-api/` | Small FastAPI app with 4 tests. Act 1's task: move `storage.py` to SQLite. |
-| `gke/00-cluster.sh` | Creates the Autopilot cluster with Agent Sandbox, the template and the warm pool |
-| `gke/10-template.yaml` | SandboxTemplate with everything the admission policy requires |
-| `gke/11-warmpool.yaml` | Warm pool of 5 |
-| `gke/12-claim.yaml` | A manual SandboxClaim, to show the object model |
-| `gke/20-privileged-template.yaml` | Same template plus `privileged: true`. Should be rejected |
-| `gke/31-locked-template.yaml` | Same runtime, egress locked in the template: DNS only |
-| `gke/99-cleanup.sh` | Deletes the cluster after the talk |
-| `agent/sandbox_agent/` | The ADK agent and the two backends |
-| `agent/probe.py` | Asks a sandbox what it is: kernel, kernel log, SA token, egress |
-| `agent/loadtest.py` | 20 sessions claim sandboxes at once; prints p50/p95, saves a chart |
+| `todo-api/` | Small FastAPI app with tests. The agent's task in Demo 1. |
+| `gke/00-cluster.sh` | Creates the Autopilot cluster, namespace, templates and warm pools |
+| `gke/10-template.yaml` | Default `SandboxTemplate`: gVisor, non-root, no SA token, limits |
+| `gke/11-warmpool.yaml` | Warm pool of 5 pods from that template |
+| `gke/12-claim.yaml` | A manual `SandboxClaim`, to show the object model |
+| `gke/20-privileged-template.yaml` | Same template + `privileged: true`. Rejected at admission |
+| `gke/31-locked-template.yaml` | Same runtime, egress locked **in the template**: DNS only |
+| `gke/99-cleanup.sh` | Deletes the cluster |
+| `agent/` | ADK + Gemini agent with a `run_code` tool; `SANDBOX_BACKEND=docker\|gke` |
+| `docs/screenshots/` | Stills from the recorded demo |
 
-## Setup (night before)
+---
+
+## Demo 1: Docker Sandboxes on the laptop (~60s)
 
 ```bash
-# Laptop (Rajani)
-brew install docker/tap/sbx            # Windows: winget install Docker.sbx
+brew install docker/tap/sbx          # Windows: winget install Docker.sbx
 sbx login
-cd todo-api && git init && git add . && git commit -m "start" && cd ..
-sbx create --name agent-runner shell   # no path = nothing from the laptop is mounted
+cd todo-api && git init -q && git add . && git commit -qm start
 
-# Cluster (Rishi)
-export PROJECT_ID=your-project REGION=asia-south1
+sbx run --clone --name todo claude
+```
+
+On first run `sbx` asks for a network policy: **Open**, **Balanced** (deny by default, common dev sites allowed)
+or **Locked Down**. Pick **Balanced**. Locked Down also blocks the agent's own model API.
+
+Inside the sandbox, ask Claude:
+
+```
+Add a /health endpoint to app/main.py that returns {"status": "ok"}
+```
+
+It edits the code and runs the tests on its own, from `/home/agent/...`, inside the microVM. Then `/exit` and:
+
+```bash
+sbx policy ls     # the allowlist
+git status        # on the host: "nothing to commit, working tree clean"
+sbx rm todo       # sandbox gone
+```
+
+`--clone` gives the agent a private copy of the repo, so the host working tree is never touched.
+
+![policy, clean git status, sandbox removed](docs/screenshots/05-policy-ls-git-clean-sbx-rm.png)
+
+---
+
+## Demo 2 + 3: GKE Agent Sandbox (~90s)
+
+### Setup (the night before, ~10 min)
+
+```bash
+export PROJECT_ID=<your-project>
 bash gke/00-cluster.sh
-
-# Agent (both)
-cd agent
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp sandbox_agent/.env.example sandbox_agent/.env   # add your Gemini key
-python probe.py                                    # smoke test on GKE
-SANDBOX_BACKEND=docker python probe.py             # smoke test on Docker
+kubectl get sandboxwarmpool,pods -n agents     # wait for the pods to be Running
 ```
 
-## On stage
-
-### Part 1: Docker Sandboxes (Rajani, ~3 min)
+### Inside a sandbox
 
 ```bash
-cd todo-api
-sbx run --clone --name todo claude     # agent works on a private clone
-#   ask: "Move storage.py to SQLite, keep the same functions, make pytest pass."
-sbx policy ls                          # deny by default; show the allowlist
-sbx policy allow network pypi.org      # only if pip install was blocked
-sbx policy allow network files.pythonhosted.org
-git status                             # on the laptop: clean, the agent used a clone
-sbx rm todo
+kubectl get sandboxwarmpool,pods -n agents
+POD=$(kubectl get pods -n agents -o name | grep python-sandbox-pool | head -1)
+kubectl exec -n agents $POD -- dmesg | head -3
+kubectl exec -n agents $POD -- ls /var/run/secrets/kubernetes.io
 ```
 
-### Part 2: One agent, two places (Rishi, ~4 min)
+- Warm pods are already running, so a claim never waits on a cold start.
+- `dmesg` prints **gVisor's own boot log** (`Starting gVisor...`), not the node's kernel log.
+- No service account token is mounted, so code in the sandbox can't call the Kubernetes API.
+
+![warm pool](docs/screenshots/06-gke-warm-pool-ready.png)
+![gVisor boot log and no SA token](docs/screenshots/07-gvisor-boot-log-no-sa-token.png)
+
+### Guardrails the agent can't change
 
 ```bash
-cd agent
-SANDBOX_BACKEND=docker python probe.py   # microVM: its own kernel
-python probe.py                          # GKE: gVisor's own kernel log, no SA token
-adk web                                  # open http://127.0.0.1:8000
-#   ask: "Generate 10,000 fake orders across 5 regions with a fixed seed,
-#         and give me revenue by region, top 3."
+kubectl apply -f gke/20-privileged-template.yaml
 ```
-In the observer pane: `kubectl get sandboxwarmpool,sandbox -n agents -w`
 
-Then flip `SANDBOX_BACKEND=docker` in `.env`, restart `adk web`, and ask the same question.
-Same agent, same answer, different wall around it.
+Rejected at admission:
 
-### Part 3: Load test (Rishi, ~2 min)
+```
+ValidatingAdmissionPolicy 'sandbox-core-policy' ... denied request:
+Security Violation: Privileged containers are not allowed
+```
+
+![privileged template rejected](docs/screenshots/08-privileged-template-rejected.png)
+
+### Egress is set by the template
 
 ```bash
-python loadtest.py --concurrency 20      # pool of 5: watch it drain and refill
+kubectl get networkpolicy -n agents
+LOCKED=$(kubectl get pods -n agents -o name | grep locked | head -1)
+kubectl exec -n agents $POD -- python3 -c "import urllib.request as u
+try: print('ALLOWED', u.urlopen('https://example.com',timeout=5).status)
+except Exception as e: print('BLOCKED:', e)"
+kubectl exec -n agents $LOCKED -- python3 -c "import urllib.request as u
+try: print('ALLOWED', u.urlopen('https://example.com',timeout=5).status)
+except Exception as e: print('BLOCKED:', e)"
 ```
-Put `loadtest.png` and the p50/p95 on slide 11.
 
-### Part 4: Guardrails (both, ~2 min)
+```
+ALLOWED 200
+BLOCKED: <urlopen error timed out>
+```
+
+![egress allowed vs blocked](docs/screenshots/09-egress-allowed-vs-blocked.png)
+
+---
+
+## Lessons from building this
+
+- **Agent Sandbox manages egress per template.** For each `SandboxTemplate` it creates a managed `NetworkPolicy`.
+  The default allows the public internet but blocks private ranges (`10/8`, `172.16/12`, `192.168/16`) and the
+  metadata server (`169.254/16`), and only the sandbox router can connect in.
+- **A separate deny `NetworkPolicy` doesn't help.** Network policies only add allows, so a namespace-wide deny
+  can't override the template's allow rule. Lock egress in the template's `spec.networkPolicy` instead
+  (see `gke/31-locked-template.yaml`).
+- **The admission policy acts on the template itself.** A privileged template is rejected on `kubectl apply`,
+  before any pod exists.
+- **`--clone` matters on the laptop.** The default direct mount is read-write; clone mode keeps the host working
+  tree clean.
+
+## Cost and cleanup
+
+Six small sandbox pods on Autopilot cost roughly $0.10–0.20 per hour, plus the cluster fee (often covered by
+GKE's free tier). Delete the cluster when you're done:
 
 ```bash
-kubectl apply -f ../gke/20-privileged-template.yaml
-kubectl get events -n agents --sort-by=.lastTimestamp | tail   # the rejection
-kubectl apply -f ../gke/31-locked-template.yaml   # second template, egress locked
-kubectl get networkpolicy -n agents               # one managed policy per template
-# exec into a python-sandbox-pool pod: example.com -> 200
-# exec into the python-locked-pool pod: example.com -> blocked
-kubectl delete -f ../gke/20-privileged-template.yaml
+bash gke/99-cleanup.sh
 ```
-
-## Verify in rehearsal
-
-- [ ] `sbx exec -i agent-runner python3 -` works, and the shell image has `python3`. If not, recreate with `-t python:3.12-slim`
-- [ ] `sbx run --clone` from `todo-api/` works and `git status` stays clean on the laptop
-- [ ] Whether `pip install` is blocked by default; which hosts you need to allow
-- [ ] Agent Sandbox is available in your region and the cluster version is new enough
-- [ ] Whether the Python SDK needs the agent-sandbox router installed on GKE (`SandboxClient()` connects through a `kubectl port-forward` tunnel by default)
-- [ ] `result.stderr` and `result.exit_code` field names in `k8s-agent-sandbox`; adjust `backends.py` if they differ
-- [ ] Agent Sandbox manages egress per template (`spec.networkPolicy`); a separate deny NetworkPolicy can't override its allow rule
-- [ ] Where the privileged rejection shows up: on `kubectl apply`, in events, or in the warm pool status
-- [ ] What happens when the warm pool is empty: a cold start, or an error? `loadtest.py` will tell you
-- [ ] Record every part as video in case the Wi-Fi fails
-
-After the talk: `bash gke/99-cleanup.sh` and `sbx rm agent-runner`.
 
 ## Sources
 
-- Docker Sandboxes: https://docs.docker.com/ai/sandboxes/ and CLI reference https://docs.docker.com/reference/cli/sbx/
+- Docker Sandboxes: https://docs.docker.com/ai/sandboxes/ · CLI reference: https://docs.docker.com/reference/cli/sbx/
 - GKE, enable Agent Sandbox: https://docs.cloud.google.com/kubernetes-engine/docs/how-to/how-install-agent-sandbox
-- agent-sandbox Python SDK: https://agent-sandbox.sigs.k8s.io/docs/getting_started/python-sdk-quickstart/
-- ADK code interpreter example: https://agent-sandbox.sigs.k8s.io/docs/use-cases/examples/code-interpreter-agent-on-adk/
+- Agent Sandbox (kubernetes-sigs): https://agent-sandbox.sigs.k8s.io/
