@@ -7,9 +7,7 @@ metadata:
   name: sandbox-egress-deny
   namespace: agents
 spec:
-  podSelector:
-    matchLabels:
-      app: agent-sandbox
+  podSelector: {}          # every pod in the agents namespace (only sandboxes live here)
   policyTypes: [Egress]
   egress:
   - ports:
