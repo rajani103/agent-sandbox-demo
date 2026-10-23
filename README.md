@@ -19,7 +19,7 @@ Switch with one setting: `SANDBOX_BACKEND=docker|gke`.
 | `gke/11-warmpool.yaml` | Warm pool of 5 |
 | `gke/12-claim.yaml` | A manual SandboxClaim, to show the object model |
 | `gke/20-privileged-template.yaml` | Same template plus `privileged: true`. Should be rejected |
-| `gke/30-egress-deny.yaml` | NetworkPolicy: sandboxes can only reach DNS |
+| `gke/31-locked-template.yaml` | Same runtime, egress locked in the template: DNS only |
 | `gke/99-cleanup.sh` | Deletes the cluster after the talk |
 | `agent/sandbox_agent/` | The ADK agent and the two backends |
 | `agent/probe.py` | Asks a sandbox what it is: kernel, kernel log, SA token, egress |
@@ -89,9 +89,10 @@ Put `loadtest.png` and the p50/p95 on slide 11.
 ```bash
 kubectl apply -f ../gke/20-privileged-template.yaml
 kubectl get events -n agents --sort-by=.lastTimestamp | tail   # the rejection
-python probe.py                          # egress: ALLOWED
-kubectl apply -f ../gke/30-egress-deny.yaml
-python probe.py                          # egress: BLOCKED. The agent didn't change.
+kubectl apply -f ../gke/31-locked-template.yaml   # second template, egress locked
+kubectl get networkpolicy -n agents               # one managed policy per template
+# exec into a python-sandbox-pool pod: example.com -> 200
+# exec into the python-locked-pool pod: example.com -> blocked
 kubectl delete -f ../gke/20-privileged-template.yaml
 ```
 
@@ -103,7 +104,7 @@ kubectl delete -f ../gke/20-privileged-template.yaml
 - [ ] Agent Sandbox is available in your region and the cluster version is new enough
 - [ ] Whether the Python SDK needs the agent-sandbox router installed on GKE (`SandboxClient()` connects through a `kubectl port-forward` tunnel by default)
 - [ ] `result.stderr` and `result.exit_code` field names in `k8s-agent-sandbox`; adjust `backends.py` if they differ
-- [ ] Sandbox pods actually carry the `app: agent-sandbox` label (`kubectl get pods -n agents --show-labels`); if not, fix the NetworkPolicy selector
+- [ ] Agent Sandbox manages egress per template (`spec.networkPolicy`); a separate deny NetworkPolicy can't override its allow rule
 - [ ] Where the privileged rejection shows up: on `kubectl apply`, in events, or in the warm pool status
 - [ ] What happens when the warm pool is empty: a cold start, or an error? `loadtest.py` will tell you
 - [ ] Record every part as video in case the Wi-Fi fails
